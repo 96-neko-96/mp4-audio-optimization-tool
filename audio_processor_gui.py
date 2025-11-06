@@ -7,6 +7,8 @@
 import os
 import sys
 import tempfile
+import subprocess
+import shutil
 from pathlib import Path
 
 try:
@@ -22,6 +24,108 @@ except ImportError as e:
     print("以下のコマンドで依存ライブラリをインストールしてください:")
     print("  pip install -r requirements.txt")
     sys.exit(1)
+
+
+def check_ffmpeg_availability():
+    """FFmpegが使用可能かチェック"""
+    result = {
+        'available': False,
+        'path': None,
+        'version': None,
+        'message': ''
+    }
+
+    # システムのPATHからFFmpegを検索
+    ffmpeg_path = shutil.which('ffmpeg')
+
+    if ffmpeg_path:
+        result['path'] = ffmpeg_path
+        result['available'] = True
+
+        # バージョン情報を取得
+        try:
+            version_output = subprocess.check_output(
+                [ffmpeg_path, '-version'],
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                timeout=5
+            )
+            # 最初の行からバージョン情報を抽出
+            first_line = version_output.split('\n')[0]
+            result['version'] = first_line
+            result['message'] = f"✅ FFmpeg使用可能\n📍 パス: {ffmpeg_path}\n📦 {first_line}"
+        except Exception as e:
+            result['message'] = f"✅ FFmpegが見つかりました\n📍 パス: {ffmpeg_path}\n⚠️ バージョン確認エラー: {e}"
+    else:
+        # imageio-ffmpegがインストールされているか確認
+        try:
+            import imageio_ffmpeg
+            ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+            if os.path.exists(ffmpeg_path):
+                result['path'] = ffmpeg_path
+                result['available'] = True
+                result['message'] = f"✅ FFmpeg使用可能（imageio-ffmpeg）\n📍 パス: {ffmpeg_path}"
+            else:
+                result['message'] = "❌ FFmpegが見つかりません\n\n推奨インストール方法:\n• Windows: https://ffmpeg.org/download.html\n• macOS: brew install ffmpeg\n• Linux: apt install ffmpeg"
+        except ImportError:
+            result['message'] = "❌ FFmpegが見つかりません\n\n推奨インストール方法:\n• Windows: https://ffmpeg.org/download.html\n• macOS: brew install ffmpeg\n• Linux: apt install ffmpeg"
+
+    return result
+
+
+def set_ffmpeg_path(custom_path: str):
+    """カスタムFFmpegパスを設定"""
+    if not custom_path or not custom_path.strip():
+        return check_ffmpeg_availability()
+
+    custom_path = custom_path.strip()
+
+    # パスの存在確認
+    if not os.path.exists(custom_path):
+        return {
+            'available': False,
+            'path': None,
+            'version': None,
+            'message': f"❌ 指定されたパスが見つかりません: {custom_path}"
+        }
+
+    # 実行可能か確認
+    if not os.access(custom_path, os.X_OK):
+        return {
+            'available': False,
+            'path': custom_path,
+            'version': None,
+            'message': f"❌ 指定されたファイルは実行可能ではありません: {custom_path}"
+        }
+
+    result = {
+        'available': True,
+        'path': custom_path,
+        'version': None,
+        'message': ''
+    }
+
+    # バージョン確認
+    try:
+        version_output = subprocess.check_output(
+            [custom_path, '-version'],
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            timeout=5
+        )
+        first_line = version_output.split('\n')[0]
+        result['version'] = first_line
+        result['message'] = f"✅ カスタムFFmpegを設定しました\n📍 パス: {custom_path}\n📦 {first_line}"
+
+        # 環境変数に設定（moviepyが使用）
+        os.environ['FFMPEG_BINARY'] = custom_path
+        os.environ['IMAGEIO_FFMPEG_EXE'] = custom_path
+
+    except Exception as e:
+        result['available'] = False
+        result['message'] = f"❌ FFmpegの確認に失敗しました: {e}\nパス: {custom_path}"
+
+    return result
 
 
 class AudioProcessorGUI:
@@ -517,6 +621,25 @@ def create_gui():
                         info="削除する無音の前後に残す時間（推奨: 100）"
                     )
 
+                with gr.Accordion("🔧 FFmpeg設定", open=False):
+                    ffmpeg_status = gr.Textbox(
+                        label="FFmpeg状態",
+                        value="確認中...",
+                        lines=5,
+                        interactive=False,
+                        elem_classes=["output-text"]
+                    )
+
+                    ffmpeg_check_btn = gr.Button("🔄 FFmpegを再確認", size="sm")
+
+                    ffmpeg_custom_path = gr.Textbox(
+                        label="カスタムFFmpegパス（オプション）",
+                        placeholder="例: C:\\ffmpeg\\bin\\ffmpeg.exe または /usr/local/bin/ffmpeg",
+                        info="システムのFFmpegが見つからない場合、手動でパスを指定できます"
+                    )
+
+                    ffmpeg_set_btn = gr.Button("✅ カスタムパスを設定", size="sm")
+
                 process_btn = gr.Button("🚀 処理を開始", variant="primary", size="lg")
 
             with gr.Column(scale=1):
@@ -583,6 +706,34 @@ def create_gui():
             fn=apply_aggressive_preset,
             outputs=[enable_noise_reduction, enable_silence_removal, silence_threshold,
                     min_silence_len, keep_silence, normalize_level]
+        )
+
+        # FFmpeg確認ボタンのイベント
+        def check_ffmpeg_status():
+            """FFmpegの状態を確認してメッセージを返す"""
+            result = check_ffmpeg_availability()
+            return result['message']
+
+        def set_custom_ffmpeg_path(path):
+            """カスタムFFmpegパスを設定してメッセージを返す"""
+            result = set_ffmpeg_path(path)
+            return result['message']
+
+        ffmpeg_check_btn.click(
+            fn=check_ffmpeg_status,
+            outputs=ffmpeg_status
+        )
+
+        ffmpeg_set_btn.click(
+            fn=set_custom_ffmpeg_path,
+            inputs=ffmpeg_custom_path,
+            outputs=ffmpeg_status
+        )
+
+        # ページロード時にFFmpegの状態を確認
+        app.load(
+            fn=check_ffmpeg_status,
+            outputs=ffmpeg_status
         )
 
         # 処理ボタンのイベント
