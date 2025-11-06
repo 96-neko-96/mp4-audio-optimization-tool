@@ -220,7 +220,22 @@ class AudioProcessorGUI:
             progress(0, desc="処理を開始します...")
 
             # 入力ファイル情報を取得
-            input_path = input_file.name
+            # Gradioのバージョンによって返り値が異なるため、柔軟に対応
+            if isinstance(input_file, str):
+                input_path = input_file
+            elif hasattr(input_file, 'name'):
+                input_path = input_file.name
+            else:
+                return None, "エラー: 入力ファイルの形式が不正です", ""
+
+            # ファイルの存在確認
+            if not os.path.exists(input_path):
+                return None, f"エラー: ファイルが見つかりません: {input_path}", ""
+
+            # ディレクトリでないことを確認
+            if os.path.isdir(input_path):
+                return None, f"エラー: フォルダではなくファイルを選択してください: {input_path}", ""
+
             input_size = os.path.getsize(input_path) / (1024 * 1024)
             base_name = Path(input_path).stem
 
@@ -381,8 +396,7 @@ def create_gui():
                 gr.Markdown("## 📁 入力ファイル")
                 input_file = gr.File(
                     label="MP4ファイルを選択",
-                    file_types=[".mp4", ".avi", ".mov", ".mkv"],
-                    type="filepath"
+                    file_types=[".mp4", ".avi", ".mov", ".mkv"]
                 )
 
                 gr.Markdown("## ⚙️ 処理オプション")
