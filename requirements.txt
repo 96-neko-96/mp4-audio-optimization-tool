@@ -1,5 +1,7 @@
-moviepy>=1.0.3
+moviepy==1.0.3
+decorator>=4.4.2
+imageio-ffmpeg>=0.4.8
 noisereduce>=3.0.0
 pydub>=0.25.1
-numpy>=1.24.0
+numpy>=1.24.0,<2.0.0
 gradio>=4.0.0
