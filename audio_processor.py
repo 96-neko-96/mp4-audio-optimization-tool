@@ -341,7 +341,17 @@ class AudioProcessor:
             # 圧縮フォーマットの場合、FFmpegを再確認して設定
             format_lower = output_format.lower()
             if format_lower in ['mp3', 'aac', 'ogg', 'opus']:
-                if not setup_ffmpeg():
+                # FFmpegパスを取得
+                ffmpeg_path = shutil.which('ffmpeg')
+                if not ffmpeg_path:
+                    # imageio-ffmpegを試す
+                    try:
+                        import imageio_ffmpeg
+                        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+                    except ImportError:
+                        pass
+
+                if not ffmpeg_path or not os.path.exists(ffmpeg_path):
                     print(f"エラー: FFmpegが見つかりません。{format_lower.upper()}形式での出力にはFFmpegが必要です。")
                     print("\nFFmpegのインストール方法:")
                     print("  Windows: https://ffmpeg.org/download.html からダウンロード")
@@ -349,6 +359,19 @@ class AudioProcessor:
                     print("  Linux: sudo apt install ffmpeg")
                     print("\n代替案: --format wav を使用してWAV形式で出力してください。")
                     return False
+
+                # PyDub用にFFmpegパスを明示的に設定（export直前）
+                self.log(f"FFmpegパスを設定: {ffmpeg_path}")
+                AudioSegment.converter = ffmpeg_path
+                AudioSegment.ffmpeg = ffmpeg_path
+                AudioSegment.ffprobe = ffmpeg_path.replace('ffmpeg', 'ffprobe')
+
+                # 環境変数にも設定
+                os.environ['FFMPEG_BINARY'] = ffmpeg_path
+                os.environ['IMAGEIO_FFMPEG_EXE'] = ffmpeg_path
+
+                self.log(f"AudioSegment.converter: {AudioSegment.converter}")
+                self.log(f"AudioSegment.ffmpeg: {AudioSegment.ffmpeg}")
 
             self.log(f"最終音声ファイルを読み込み中: {input_path}")
             audio = AudioSegment.from_file(input_path)
@@ -381,6 +404,7 @@ class AudioProcessor:
 
             # 音声をエクスポート
             self.log(f"エクスポートパラメータ: {export_params}")
+            self.log(f"出力パス: {output_path}")
             audio.export(output_path, **export_params)
             self.log(f"音声を保存しました: {output_path}")
 
@@ -391,11 +415,14 @@ class AudioProcessor:
             print(f"エラー: 最終音声の出力に失敗しました: {e}")
             if self.verbose:
                 traceback.print_exc()
-            if "codec" in str(e).lower() or "encoder" in str(e).lower() or "WinError 2" in str(e):
-                print(f"\nFFmpegエラーの可能性があります。")
-                print(f"現在のAudioSegment.ffmpeg設定: {getattr(AudioSegment, 'ffmpeg', 'なし')}")
-                print(f"現在のAudioSegment.converter設定: {getattr(AudioSegment, 'converter', 'なし')}")
-                print(f"\nFFmpegをインストールして、システムのPATHに追加してください。")
+            if "codec" in str(e).lower() or "encoder" in str(e).lower() or "WinError 2" in str(e) or "FileNotFoundError" in str(e):
+                print(f"\nFFmpegパスの問題の可能性があります。")
+                print(f"検出されたFFmpegパス: {shutil.which('ffmpeg') or 'なし'}")
+                print(f"AudioSegment.ffmpeg: {getattr(AudioSegment, 'ffmpeg', 'なし')}")
+                print(f"AudioSegment.converter: {getattr(AudioSegment, 'converter', 'なし')}")
+                print(f"\n解決方法:")
+                print(f"1. FFmpegをシステムのPATHに追加してください")
+                print(f"2. 代替案として --format wav を使用してWAV形式で出力")
             return False
 
     def cleanup_temp_files(self, keep_intermediate: bool = False):
