@@ -121,6 +121,11 @@ def set_ffmpeg_path(custom_path: str):
         os.environ['FFMPEG_BINARY'] = custom_path
         os.environ['IMAGEIO_FFMPEG_EXE'] = custom_path
 
+        # PyDub用の設定を追加
+        AudioSegment.converter = custom_path
+        AudioSegment.ffmpeg = custom_path
+        AudioSegment.ffprobe = shutil.which('ffprobe') or custom_path.replace('ffmpeg', 'ffprobe')
+
     except Exception as e:
         result['available'] = False
         result['message'] = f"❌ FFmpegの確認に失敗しました: {e}\nパス: {custom_path}"
@@ -128,11 +133,42 @@ def set_ffmpeg_path(custom_path: str):
     return result
 
 
+def setup_ffmpeg_for_pydub():
+    """PyDub用にFFmpegを設定"""
+    # 既に設定されている場合はスキップ
+    if hasattr(AudioSegment, 'ffmpeg') and AudioSegment.ffmpeg:
+        return True
+
+    # システムのPATHからFFmpegを検索
+    ffmpeg_path = shutil.which('ffmpeg')
+
+    if ffmpeg_path and os.path.exists(ffmpeg_path):
+        AudioSegment.converter = ffmpeg_path
+        AudioSegment.ffmpeg = ffmpeg_path
+        AudioSegment.ffprobe = shutil.which('ffprobe') or ffmpeg_path.replace('ffmpeg', 'ffprobe')
+        return True
+
+    # imageio-ffmpegを試す
+    try:
+        import imageio_ffmpeg
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        if os.path.exists(ffmpeg_path):
+            AudioSegment.converter = ffmpeg_path
+            AudioSegment.ffmpeg = ffmpeg_path
+            return True
+    except ImportError:
+        pass
+
+    return False
+
+
 class AudioProcessorGUI:
     """音声処理のGUIラッパークラス"""
 
     def __init__(self):
         self.temp_files = []
+        # PyDub用のFFmpeg設定を初期化
+        setup_ffmpeg_for_pydub()
 
     def log(self, message: str):
         """ログメッセージを出力"""

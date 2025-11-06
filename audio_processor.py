@@ -8,6 +8,7 @@ import argparse
 import os
 import sys
 import time
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,6 +24,40 @@ except ImportError as e:
     print("以下のコマンドで依存ライブラリをインストールしてください:")
     print("  pip install -r requirements.txt")
     sys.exit(1)
+
+
+def setup_ffmpeg():
+    """FFmpegのパスを自動検出して設定"""
+    # 既に設定されている場合はスキップ
+    if 'FFMPEG_BINARY' in os.environ and os.path.exists(os.environ['FFMPEG_BINARY']):
+        return True
+
+    # システムのPATHからFFmpegを検索
+    ffmpeg_path = shutil.which('ffmpeg')
+
+    if ffmpeg_path and os.path.exists(ffmpeg_path):
+        os.environ['FFMPEG_BINARY'] = ffmpeg_path
+        os.environ['IMAGEIO_FFMPEG_EXE'] = ffmpeg_path
+        # PyDub用の設定
+        AudioSegment.converter = ffmpeg_path
+        AudioSegment.ffmpeg = ffmpeg_path
+        AudioSegment.ffprobe = shutil.which('ffprobe') or ffmpeg_path.replace('ffmpeg', 'ffprobe')
+        return True
+
+    # imageio-ffmpegを試す
+    try:
+        import imageio_ffmpeg
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        if os.path.exists(ffmpeg_path):
+            os.environ['FFMPEG_BINARY'] = ffmpeg_path
+            os.environ['IMAGEIO_FFMPEG_EXE'] = ffmpeg_path
+            AudioSegment.converter = ffmpeg_path
+            AudioSegment.ffmpeg = ffmpeg_path
+            return True
+    except ImportError:
+        pass
+
+    return False
 
 
 class AudioProcessor:
@@ -630,6 +665,20 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # FFmpegのセットアップ
+    if not setup_ffmpeg():
+        print("警告: FFmpegが見つかりませんでした。")
+        print("MP3/AAC等の圧縮フォーマットでの出力にはFFmpegが必要です。")
+        print("\nFFmpegのインストール方法:")
+        print("  Windows: https://ffmpeg.org/download.html からダウンロード")
+        print("  macOS: brew install ffmpeg")
+        print("  Linux: sudo apt install ffmpeg (Ubuntu/Debian)")
+        print("         sudo yum install ffmpeg (CentOS/RHEL)")
+        print("\nWAV形式での出力は可能ですが、--format wav を指定してください。")
+        if args.format != 'wav':
+            print(f"\nエラー: {args.format}形式での出力にはFFmpegが必要です。")
+            sys.exit(1)
 
     # 出力ファイル名を生成
     if args.output is None:
