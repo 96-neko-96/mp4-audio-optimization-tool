@@ -211,7 +211,7 @@ class AudioProcessorGUI:
 
         # 入力ファイルの検証
         if input_file is None:
-            return None, "エラー: 入力ファイルを選択してください", ""
+            return None, "エラー: 入力ファイルを選択してください", None
 
         try:
             # 古い一時ファイルをクリーンアップ
@@ -221,20 +221,44 @@ class AudioProcessorGUI:
 
             # 入力ファイル情報を取得
             # Gradioのバージョンによって返り値が異なるため、柔軟に対応
-            if isinstance(input_file, str):
+            input_path = None
+
+            # デバッグ情報
+            print(f"[DEBUG] input_file type: {type(input_file)}")
+            print(f"[DEBUG] input_file value: {input_file}")
+
+            # 辞書型の場合（Gradio 4.x）
+            if isinstance(input_file, dict):
+                # 'name'キーが存在する場合
+                if 'name' in input_file:
+                    input_path = input_file['name']
+                # 'path'キーが存在する場合
+                elif 'path' in input_file:
+                    input_path = input_file['path']
+                else:
+                    return None, f"エラー: 入力ファイルの形式が不正です（辞書型）: {input_file}", None
+            # 文字列の場合
+            elif isinstance(input_file, str):
                 input_path = input_file
+            # オブジェクトの場合
             elif hasattr(input_file, 'name'):
                 input_path = input_file.name
             else:
-                return None, "エラー: 入力ファイルの形式が不正です", ""
+                return None, f"エラー: 入力ファイルの形式が不正です（型: {type(input_file)}）", None
+
+            print(f"[DEBUG] extracted path: {input_path}")
+
+            # パスが取得できなかった場合
+            if not input_path:
+                return None, "エラー: ファイルパスを取得できませんでした", None
 
             # ファイルの存在確認
             if not os.path.exists(input_path):
-                return None, f"エラー: ファイルが見つかりません: {input_path}", ""
+                return None, f"エラー: ファイルが見つかりません: {input_path}", None
 
             # ディレクトリでないことを確認
             if os.path.isdir(input_path):
-                return None, f"エラー: フォルダではなくファイルを選択してください: {input_path}", ""
+                return None, f"エラー: フォルダではなくファイルを選択してください: {input_path}", None
 
             input_size = os.path.getsize(input_path) / (1024 * 1024)
             base_name = Path(input_path).stem
@@ -252,7 +276,7 @@ class AudioProcessorGUI:
             success, msg = self.extract_audio_from_video(input_path, temp_audio, progress)
             if not success:
                 self.cleanup_temp_files()
-                return None, msg, ""
+                return None, msg, None
             status_messages.append(f"✓ {msg}")
             current_file = temp_audio
 
@@ -263,7 +287,7 @@ class AudioProcessorGUI:
                 success, msg = self.reduce_noise(current_file, denoised_file, progress)
                 if not success:
                     self.cleanup_temp_files()
-                    return None, msg, ""
+                    return None, msg, None
                 status_messages.append(f"✓ {msg}")
                 current_file = denoised_file
             else:
@@ -275,7 +299,7 @@ class AudioProcessorGUI:
             success, msg = self.normalize_audio(current_file, normalized_file, normalize_level, progress)
             if not success:
                 self.cleanup_temp_files()
-                return None, msg, ""
+                return None, msg, None
             status_messages.append(f"✓ {msg}")
             current_file = normalized_file
 
@@ -285,7 +309,7 @@ class AudioProcessorGUI:
             success, msg = self.apply_compression(current_file, compressed_file, progress)
             if not success:
                 self.cleanup_temp_files()
-                return None, msg, ""
+                return None, msg, None
             status_messages.append(f"✓ {msg}")
             current_file = compressed_file
 
@@ -303,7 +327,7 @@ class AudioProcessorGUI:
                 )
                 if not success:
                     self.cleanup_temp_files()
-                    return None, msg, ""
+                    return None, msg, None
                 status_messages.append(f"✓ {msg}")
             else:
                 status_messages.append("\n[5/6] 無音除去をスキップ")
@@ -355,7 +379,10 @@ class AudioProcessorGUI:
 
         except Exception as e:
             self.cleanup_temp_files()
-            return None, f"予期しないエラーが発生しました: {e}", ""
+            import traceback
+            error_details = traceback.format_exc()
+            print(f"[ERROR] {error_details}")
+            return None, f"予期しないエラーが発生しました: {e}", None
 
 
 def create_gui():
@@ -464,13 +491,11 @@ def create_gui():
 
                 gr.Markdown("## 🎧 処理結果")
                 audio_output = gr.Audio(
-                    label="処理済み音声",
-                    type="filepath"
+                    label="処理済み音声"
                 )
 
                 download_output = gr.File(
-                    label="ダウンロード",
-                    type="filepath"
+                    label="ダウンロード"
                 )
 
         # プリセットボタン
