@@ -108,14 +108,46 @@ class AudioProcessor:
 
             sample_rate = audio.frame_rate
 
+            # 音声の長さをチェック
+            audio_length = len(samples) / sample_rate
+            self.log(f"音声の長さ: {audio_length:.2f}秒, サンプルレート: {sample_rate}Hz")
+
+            # 音声が短すぎる場合はスキップ
+            if audio_length < 0.5:
+                self.log("音声が短すぎるため、ノイズ除去をスキップします")
+                audio.export(output_path, format="wav")
+                self.temp_files.append(output_path)
+                return True
+
             self.log("ノイズ除去処理を実行中...")
-            # ノイズ除去を実行
-            reduced_noise = nr.reduce_noise(
-                y=samples,
-                sr=sample_rate,
-                stationary=True,
-                prop_decrease=0.8
-            )
+
+            # サンプルレートに応じてパラメータを調整
+            # n_fft: FFTのウィンドウサイズ（デフォルト2048だが、短い音声では小さくする）
+            n_fft = min(2048, int(sample_rate * 0.025))  # 25ms または 2048 の小さい方
+            hop_length = n_fft // 4  # オーバーラップ75%
+
+            # n_fftが偶数であることを確保
+            if n_fft % 2 != 0:
+                n_fft -= 1
+
+            self.log(f"ノイズ除去パラメータ: n_fft={n_fft}, hop_length={hop_length}")
+
+            try:
+                # ノイズ除去を実行
+                reduced_noise = nr.reduce_noise(
+                    y=samples,
+                    sr=sample_rate,
+                    stationary=True,
+                    prop_decrease=0.8,
+                    n_fft=n_fft,
+                    hop_length=hop_length
+                )
+            except Exception as nr_error:
+                # ノイズ除去に失敗した場合は元の音声を使用
+                self.log(f"ノイズ除去エラー: {nr_error}、元の音声を使用します")
+                audio.export(output_path, format="wav")
+                self.temp_files.append(output_path)
+                return True
 
             # numpy配列をAudioSegmentに戻す
             if audio.channels == 2:
@@ -138,6 +170,9 @@ class AudioProcessor:
             return True
 
         except Exception as e:
+            import traceback
+            if self.verbose:
+                traceback.print_exc()
             print(f"エラー: ノイズ除去に失敗しました: {e}")
             return False
 
