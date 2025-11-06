@@ -450,6 +450,7 @@ class AudioProcessorGUI:
         input_file,
         enable_noise_reduction: bool,
         enable_silence_removal: bool,
+        enable_compression: bool,
         silence_threshold: int,
         min_silence_len: int,
         keep_silence: int,
@@ -555,14 +556,17 @@ class AudioProcessorGUI:
             current_file = normalized_file
 
             # 4. ダイナミックレンジ圧縮
-            status_messages.append("\n[4/7] ダイナミックレンジを圧縮中...")
-            compressed_file = os.path.join(temp_dir, f"{base_name}_compressed.wav")
-            success, msg = self.apply_compression(current_file, compressed_file, progress)
-            if not success:
-                self.cleanup_temp_files()
-                return None, msg, None
-            status_messages.append(f"✓ {msg}")
-            current_file = compressed_file
+            if enable_compression:
+                status_messages.append("\n[4/7] ダイナミックレンジを圧縮中...")
+                compressed_file = os.path.join(temp_dir, f"{base_name}_compressed.wav")
+                success, msg = self.apply_compression(current_file, compressed_file, progress)
+                if not success:
+                    self.cleanup_temp_files()
+                    return None, msg, None
+                status_messages.append(f"✓ {msg}")
+                current_file = compressed_file
+            else:
+                status_messages.append("\n[4/7] ダイナミックレンジ圧縮をスキップ")
 
             # 5. 無音除去
             if enable_silence_removal:
@@ -701,6 +705,12 @@ def create_gui():
                         info="背景ノイズを除去します（処理時間が増加します）"
                     )
 
+                    enable_compression = gr.Checkbox(
+                        label="ダイナミックレンジ圧縮を有効化",
+                        value=False,
+                        info="音量差を圧縮します（⚠️処理が非常に遅くなります）"
+                    )
+
                     enable_silence_removal = gr.Checkbox(
                         label="無音除去を有効化",
                         value=True,
@@ -810,40 +820,40 @@ def create_gui():
 
         # プリセット設定の関数
         def apply_standard_preset():
-            return True, True, -40, 500, 100, -20.0
+            return True, True, False, -40, 500, 100, -20.0
 
         def apply_quality_preset():
-            return True, True, -35, 400, 150, -18.0
+            return True, True, False, -35, 400, 150, -18.0
 
         def apply_fast_preset():
-            return False, True, -40, 500, 100, -20.0
+            return False, True, False, -40, 500, 100, -20.0
 
         def apply_aggressive_preset():
-            return True, True, -45, 1000, 50, -20.0
+            return True, True, False, -45, 1000, 50, -20.0
 
         # プリセットボタンのイベント
         preset_standard.click(
             fn=apply_standard_preset,
-            outputs=[enable_noise_reduction, enable_silence_removal, silence_threshold,
-                    min_silence_len, keep_silence, normalize_level]
+            outputs=[enable_noise_reduction, enable_silence_removal, enable_compression,
+                    silence_threshold, min_silence_len, keep_silence, normalize_level]
         )
 
         preset_quality.click(
             fn=apply_quality_preset,
-            outputs=[enable_noise_reduction, enable_silence_removal, silence_threshold,
-                    min_silence_len, keep_silence, normalize_level]
+            outputs=[enable_noise_reduction, enable_silence_removal, enable_compression,
+                    silence_threshold, min_silence_len, keep_silence, normalize_level]
         )
 
         preset_fast.click(
             fn=apply_fast_preset,
-            outputs=[enable_noise_reduction, enable_silence_removal, silence_threshold,
-                    min_silence_len, keep_silence, normalize_level]
+            outputs=[enable_noise_reduction, enable_silence_removal, enable_compression,
+                    silence_threshold, min_silence_len, keep_silence, normalize_level]
         )
 
         preset_aggressive.click(
             fn=apply_aggressive_preset,
-            outputs=[enable_noise_reduction, enable_silence_removal, silence_threshold,
-                    min_silence_len, keep_silence, normalize_level]
+            outputs=[enable_noise_reduction, enable_silence_removal, enable_compression,
+                    silence_threshold, min_silence_len, keep_silence, normalize_level]
         )
 
         # FFmpeg確認ボタンのイベント
@@ -881,6 +891,7 @@ def create_gui():
                 input_file,
                 enable_noise_reduction,
                 enable_silence_removal,
+                enable_compression,
                 silence_threshold,
                 min_silence_len,
                 keep_silence,

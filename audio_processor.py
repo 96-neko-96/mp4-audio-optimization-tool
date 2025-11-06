@@ -128,7 +128,7 @@ class AudioProcessor:
                 print("FFmpegをインストールしてください: https://ffmpeg.org/download.html")
             return False
 
-    def reduce_noise(self, input_path: str, output_path: str) -> bool:
+    def reduce_noise(self, input_path: str, output_path: str, fast_mode: bool = False) -> bool:
         """ノイズ除去を実行"""
         try:
             self.log(f"音声ファイルを読み込み中: {input_path}")
@@ -405,6 +405,7 @@ class AudioProcessor:
         output_file: str,
         no_noise_reduction: bool = False,
         no_silence_removal: bool = False,
+        no_compression: bool = False,
         silence_threshold: int = -40,
         min_silence_len: int = 500,
         keep_silence: int = 100,
@@ -431,8 +432,10 @@ class AudioProcessor:
             print(f"  時間: {input_duration:.2f} 秒 ({input_duration/60:.2f} 分)")
 
         # 処理ステップ数を計算
-        total_steps = 5  # 基本: 抽出、正規化、圧縮、最終出力、クリーンアップ
+        total_steps = 4  # 基本: 抽出、正規化、最終出力、クリーンアップ
         if not no_noise_reduction:
+            total_steps += 1
+        if not no_compression:
             total_steps += 1
         if not no_silence_removal:
             total_steps += 1
@@ -485,17 +488,20 @@ class AudioProcessor:
         current_file = normalized_file
 
         # 4. ダイナミックレンジ圧縮
-        current_step += 1
-        self.print_step(current_step, total_steps, "ダイナミックレンジを圧縮中...")
-        step_start = time.time()
+        if not no_compression:
+            current_step += 1
+            self.print_step(current_step, total_steps, "ダイナミックレンジを圧縮中...")
+            step_start = time.time()
 
-        compressed_file = f"{base_name}_compressed.wav" if save_intermediate else f"{base_name}_temp_compressed.wav"
-        if not self.apply_compression(current_file, compressed_file):
-            self.cleanup_temp_files(save_intermediate)
-            return False
+            compressed_file = f"{base_name}_compressed.wav" if save_intermediate else f"{base_name}_temp_compressed.wav"
+            if not self.apply_compression(current_file, compressed_file):
+                self.cleanup_temp_files(save_intermediate)
+                return False
 
-        print(f"  完了 ({time.time() - step_start:.2f}秒)")
-        current_file = compressed_file
+            print(f"  完了 ({time.time() - step_start:.2f}秒)")
+            current_file = compressed_file
+        else:
+            print(f"\n[スキップ] ダイナミックレンジ圧縮")
 
         # 5. 無音除去
         if not no_silence_removal:
@@ -610,6 +616,12 @@ def main():
     )
 
     parser.add_argument(
+        "--no-compression",
+        action="store_true",
+        help="ダイナミックレンジ圧縮をスキップ（処理速度が大幅に向上）"
+    )
+
+    parser.add_argument(
         "--silence-threshold",
         type=int,
         default=-40,
@@ -694,6 +706,7 @@ def main():
             output_file=args.output,
             no_noise_reduction=args.no_noise_reduction,
             no_silence_removal=args.no_silence_removal,
+            no_compression=args.no_compression,
             silence_threshold=args.silence_threshold,
             min_silence_len=args.min_silence_len,
             keep_silence=args.keep_silence,
