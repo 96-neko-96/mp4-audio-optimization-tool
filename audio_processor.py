@@ -121,36 +121,44 @@ class AudioProcessor:
 
             self.log("ノイズ除去処理を実行中...")
 
-            # サンプルレートに応じてパラメータを調整
-            # 安全な値を使用してSTFTパラメータエラーを回避
-            if sample_rate >= 44100:
-                n_fft = 2048
-                hop_length = 512  # n_fft // 4
-            elif sample_rate >= 32000:
-                n_fft = 2048
-                hop_length = 512
-            elif sample_rate >= 22050:
-                n_fft = 1024
-                hop_length = 256
-            elif sample_rate >= 16000:
-                n_fft = 1024
-                hop_length = 256
-            else:
-                n_fft = 512
-                hop_length = 128
-
-            self.log(f"ノイズ除去パラメータ: n_fft={n_fft}, hop_length={hop_length}")
+            # noisereduceのデフォルトパラメータを使用
+            # n_fftやhop_lengthを手動で指定するとSTFTパラメータエラーが発生する場合があるため
+            self.log(f"ノイズ除去を実行中（デフォルトパラメータ使用）...")
 
             try:
-                # ノイズ除去を実行
-                reduced_noise = nr.reduce_noise(
-                    y=samples,
-                    sr=sample_rate,
-                    stationary=True,
-                    prop_decrease=0.8,
-                    n_fft=n_fft,
-                    hop_length=hop_length
-                )
+                # ステレオの場合、各チャンネルを個別に処理
+                if audio.channels == 2:
+                    self.log("ステレオ音声: 各チャンネルを個別に処理します")
+                    # 左チャンネル
+                    left_channel = samples[:, 0]
+                    reduced_left = nr.reduce_noise(
+                        y=left_channel,
+                        sr=sample_rate,
+                        stationary=True,
+                        prop_decrease=0.8
+                    )
+
+                    # 右チャンネル
+                    right_channel = samples[:, 1]
+                    reduced_right = nr.reduce_noise(
+                        y=right_channel,
+                        sr=sample_rate,
+                        stationary=True,
+                        prop_decrease=0.8
+                    )
+
+                    # 2チャンネルを結合
+                    reduced_noise = np.column_stack((reduced_left, reduced_right))
+                else:
+                    # モノラル音声
+                    self.log("モノラル音声を処理します")
+                    # ノイズ除去を実行
+                    reduced_noise = nr.reduce_noise(
+                        y=samples,
+                        sr=sample_rate,
+                        stationary=True,
+                        prop_decrease=0.8
+                    )
             except Exception as nr_error:
                 # ノイズ除去に失敗した場合は元の音声を使用
                 self.log(f"ノイズ除去エラー: {nr_error}、元の音声を使用します")
@@ -158,8 +166,10 @@ class AudioProcessor:
                 self.temp_files.append(output_path)
                 return True
 
-            # numpy配列をAudioSegmentに戻す
+            # ステレオの場合は2チャンネルをインターリーブ形式にフラット化
             if audio.channels == 2:
+                # column_stackで結合したので (N, 2) の形状になっている
+                # AudioSegmentに渡すために (N*2,) の1次元配列にする
                 reduced_noise = reduced_noise.flatten()
 
             # int16に変換
