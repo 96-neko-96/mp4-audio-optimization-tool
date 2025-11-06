@@ -405,11 +405,23 @@ class AudioProcessorGUI:
     ) -> tuple:
         """最終音声を指定フォーマットで出力"""
         try:
-            progress(0.95, desc=f"{output_format.upper()}形式で出力中...")
-            audio = AudioSegment.from_file(input_path)
-
-            # 出力フォーマットに応じた処理
+            # 圧縮フォーマットの場合、FFmpegを再確認して設定
             format_lower = output_format.lower()
+            if format_lower in ['mp3', 'aac', 'ogg', 'opus']:
+                if not setup_ffmpeg_for_pydub():
+                    error_msg = f"エラー: FFmpegが見つかりません。{format_lower.upper()}形式での出力にはFFmpegが必要です。\n\n"
+                    error_msg += "FFmpegのインストール方法:\n"
+                    error_msg += "  Windows: https://ffmpeg.org/download.html からダウンロード\n"
+                    error_msg += "  macOS: brew install ffmpeg\n"
+                    error_msg += "  Linux: sudo apt install ffmpeg\n\n"
+                    error_msg += "または、画面左側のFFmpeg設定セクションからカスタムパスを設定してください。\n"
+                    error_msg += "代替案: 出力フォーマットをWAVに変更してください。"
+                    return False, error_msg
+
+            progress(0.95, desc=f"{output_format.upper()}形式で出力中...")
+
+            self.log(f"音声ファイルを読み込み中: {input_path}")
+            audio = AudioSegment.from_file(input_path)
 
             self.log(f"音声を {format_lower.upper()} 形式で出力中 (ビットレート: {bitrate})...")
 
@@ -433,6 +445,7 @@ class AudioProcessorGUI:
                     export_params['codec'] = 'libopus'
 
             # 音声をエクスポート
+            self.log(f"エクスポートパラメータ: {export_params}")
             audio.export(output_path, **export_params)
             progress(1.0, desc="出力完了")
             self.log(f"音声を保存しました: {output_path}")
@@ -440,9 +453,17 @@ class AudioProcessorGUI:
             return True, f"{format_lower.upper()}形式での出力完了 (ビットレート: {bitrate})"
 
         except Exception as e:
-            error_msg = f"エラー: 最終音声の出力に失敗しました: {e}"
-            if "codec" in str(e).lower() or "encoder" in str(e).lower():
-                error_msg += f"\nヒント: {output_format} 形式のエンコードにはFFmpegが必要です"
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"エラー詳細: {error_details}")
+
+            error_msg = f"エラー: 最終音声の出力に失敗しました: {e}\n\n"
+            if "codec" in str(e).lower() or "encoder" in str(e).lower() or "WinError 2" in str(e):
+                error_msg += "FFmpegエラーの可能性があります。\n"
+                error_msg += f"現在のAudioSegment.ffmpeg設定: {getattr(AudioSegment, 'ffmpeg', 'なし')}\n"
+                error_msg += f"現在のAudioSegment.converter設定: {getattr(AudioSegment, 'converter', 'なし')}\n\n"
+                error_msg += "FFmpegをインストールして、システムのPATHに追加するか、\n"
+                error_msg += "画面左側のFFmpeg設定セクションからカスタムパスを設定してください。"
             return False, error_msg
 
     def process_audio(

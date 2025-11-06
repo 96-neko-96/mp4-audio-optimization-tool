@@ -338,11 +338,20 @@ class AudioProcessor:
     ) -> bool:
         """最終音声を指定フォーマットで出力"""
         try:
+            # 圧縮フォーマットの場合、FFmpegを再確認して設定
+            format_lower = output_format.lower()
+            if format_lower in ['mp3', 'aac', 'ogg', 'opus']:
+                if not setup_ffmpeg():
+                    print(f"エラー: FFmpegが見つかりません。{format_lower.upper()}形式での出力にはFFmpegが必要です。")
+                    print("\nFFmpegのインストール方法:")
+                    print("  Windows: https://ffmpeg.org/download.html からダウンロード")
+                    print("  macOS: brew install ffmpeg")
+                    print("  Linux: sudo apt install ffmpeg")
+                    print("\n代替案: --format wav を使用してWAV形式で出力してください。")
+                    return False
+
             self.log(f"最終音声ファイルを読み込み中: {input_path}")
             audio = AudioSegment.from_file(input_path)
-
-            # 出力フォーマットに応じた処理
-            format_lower = output_format.lower()
 
             # 拡張子の整合性チェック
             output_ext = Path(output_path).suffix.lower().lstrip('.')
@@ -371,15 +380,22 @@ class AudioProcessor:
                     export_params['codec'] = 'libopus'
 
             # 音声をエクスポート
+            self.log(f"エクスポートパラメータ: {export_params}")
             audio.export(output_path, **export_params)
             self.log(f"音声を保存しました: {output_path}")
 
             return True
 
         except Exception as e:
+            import traceback
             print(f"エラー: 最終音声の出力に失敗しました: {e}")
-            if "codec" in str(e).lower() or "encoder" in str(e).lower():
-                print(f"ヒント: {output_format} 形式のエンコードにはFFmpegが必要です")
+            if self.verbose:
+                traceback.print_exc()
+            if "codec" in str(e).lower() or "encoder" in str(e).lower() or "WinError 2" in str(e):
+                print(f"\nFFmpegエラーの可能性があります。")
+                print(f"現在のAudioSegment.ffmpeg設定: {getattr(AudioSegment, 'ffmpeg', 'なし')}")
+                print(f"現在のAudioSegment.converter設定: {getattr(AudioSegment, 'converter', 'なし')}")
+                print(f"\nFFmpegをインストールして、システムのPATHに追加してください。")
             return False
 
     def cleanup_temp_files(self, keep_intermediate: bool = False):
