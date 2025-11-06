@@ -203,13 +203,22 @@ class AudioProcessorGUI:
             progress(0.6, desc="ノイズ除去処理を実行中...")
 
             # サンプルレートに応じてパラメータを調整
-            # n_fft: FFTのウィンドウサイズ（デフォルト2048だが、短い音声では小さくする）
-            n_fft = min(2048, int(sample_rate * 0.025))  # 25ms または 2048 の小さい方
-            hop_length = n_fft // 4  # オーバーラップ75%
-
-            # n_fftが偶数であることを確保
-            if n_fft % 2 != 0:
-                n_fft -= 1
+            # 安全な値を使用してSTFTパラメータエラーを回避
+            if sample_rate >= 44100:
+                n_fft = 2048
+                hop_length = 512  # n_fft // 4
+            elif sample_rate >= 32000:
+                n_fft = 2048
+                hop_length = 512
+            elif sample_rate >= 22050:
+                n_fft = 1024
+                hop_length = 256
+            elif sample_rate >= 16000:
+                n_fft = 1024
+                hop_length = 256
+            else:
+                n_fft = 512
+                hop_length = 128
 
             self.log(f"ノイズ除去パラメータ: n_fft={n_fft}, hop_length={hop_length}")
 
