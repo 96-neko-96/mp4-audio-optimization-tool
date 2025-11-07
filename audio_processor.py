@@ -8,6 +8,7 @@ import argparse
 import os
 import sys
 import time
+import shutil
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,6 +24,40 @@ except ImportError as e:
     print("以下のコマンドで依存ライブラリをインストールしてください:")
     print("  pip install -r requirements.txt")
     sys.exit(1)
+
+
+def setup_ffmpeg():
+    """FFmpegのパスを自動検出して設定"""
+    # 既に設定されている場合はスキップ
+    if 'FFMPEG_BINARY' in os.environ and os.path.exists(os.environ['FFMPEG_BINARY']):
+        return True
+
+    # システムのPATHからFFmpegを検索
+    ffmpeg_path = shutil.which('ffmpeg')
+
+    if ffmpeg_path and os.path.exists(ffmpeg_path):
+        os.environ['FFMPEG_BINARY'] = ffmpeg_path
+        os.environ['IMAGEIO_FFMPEG_EXE'] = ffmpeg_path
+        # PyDub用の設定
+        AudioSegment.converter = ffmpeg_path
+        AudioSegment.ffmpeg = ffmpeg_path
+        AudioSegment.ffprobe = shutil.which('ffprobe') or ffmpeg_path.replace('ffmpeg', 'ffprobe')
+        return True
+
+    # imageio-ffmpegを試す
+    try:
+        import imageio_ffmpeg
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        if os.path.exists(ffmpeg_path):
+            os.environ['FFMPEG_BINARY'] = ffmpeg_path
+            os.environ['IMAGEIO_FFMPEG_EXE'] = ffmpeg_path
+            AudioSegment.converter = ffmpeg_path
+            AudioSegment.ffmpeg = ffmpeg_path
+            return True
+    except ImportError:
+        pass
+
+    return False
 
 
 class AudioProcessor:
@@ -93,7 +128,7 @@ class AudioProcessor:
                 print("FFmpegをインストールしてください: https://ffmpeg.org/download.html")
             return False
 
-    def reduce_noise(self, input_path: str, output_path: str) -> bool:
+    def reduce_noise(self, input_path: str, output_path: str, fast_mode: bool = False) -> bool:
         """ノイズ除去を実行"""
         try:
             self.log(f"音声ファイルを読み込み中: {input_path}")
@@ -294,6 +329,102 @@ class AudioProcessor:
             print(f"エラー: 無音除去に失敗しました: {e}")
             return False
 
+    def export_final_audio(
+        self,
+        input_path: str,
+        output_path: str,
+        output_format: str = "mp3",
+        bitrate: str = "192k"
+    ) -> bool:
+        """最終音声を指定フォーマットで出力"""
+        try:
+            # 圧縮フォーマットの場合、FFmpegを再確認して設定
+            format_lower = output_format.lower()
+            if format_lower in ['mp3', 'aac', 'ogg', 'opus']:
+                # FFmpegパスを取得
+                ffmpeg_path = shutil.which('ffmpeg')
+                if not ffmpeg_path:
+                    # imageio-ffmpegを試す
+                    try:
+                        import imageio_ffmpeg
+                        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+                    except ImportError:
+                        pass
+
+                if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+                    print(f"エラー: FFmpegが見つかりません。{format_lower.upper()}形式での出力にはFFmpegが必要です。")
+                    print("\nFFmpegのインストール方法:")
+                    print("  Windows: https://ffmpeg.org/download.html からダウンロード")
+                    print("  macOS: brew install ffmpeg")
+                    print("  Linux: sudo apt install ffmpeg")
+                    print("\n代替案: --format wav を使用してWAV形式で出力してください。")
+                    return False
+
+                # PyDub用にFFmpegパスを明示的に設定（export直前）
+                self.log(f"FFmpegパスを設定: {ffmpeg_path}")
+                AudioSegment.converter = ffmpeg_path
+                AudioSegment.ffmpeg = ffmpeg_path
+                AudioSegment.ffprobe = ffmpeg_path.replace('ffmpeg', 'ffprobe')
+
+                # 環境変数にも設定
+                os.environ['FFMPEG_BINARY'] = ffmpeg_path
+                os.environ['IMAGEIO_FFMPEG_EXE'] = ffmpeg_path
+
+                self.log(f"AudioSegment.converter: {AudioSegment.converter}")
+                self.log(f"AudioSegment.ffmpeg: {AudioSegment.ffmpeg}")
+
+            self.log(f"最終音声ファイルを読み込み中: {input_path}")
+            audio = AudioSegment.from_file(input_path)
+
+            # 拡張子の整合性チェック
+            output_ext = Path(output_path).suffix.lower().lstrip('.')
+            if output_ext and output_ext != format_lower:
+                self.log(f"警告: 出力ファイルの拡張子 '{output_ext}' がフォーマット '{format_lower}' と一致しません")
+
+            self.log(f"音声を {format_lower.upper()} 形式で出力中 (ビットレート: {bitrate})...")
+
+            # フォーマット別のパラメータ設定
+            export_params = {
+                'format': format_lower,
+            }
+
+            # 圧縮フォーマットの場合はビットレートを設定
+            if format_lower in ['mp3', 'aac', 'ogg', 'opus']:
+                export_params['bitrate'] = bitrate
+
+                # MP3の場合はコーデックを指定
+                if format_lower == 'mp3':
+                    export_params['codec'] = 'libmp3lame'
+                # AACの場合
+                elif format_lower == 'aac':
+                    export_params['codec'] = 'aac'
+                # Opusの場合
+                elif format_lower == 'opus':
+                    export_params['codec'] = 'libopus'
+
+            # 音声をエクスポート
+            self.log(f"エクスポートパラメータ: {export_params}")
+            self.log(f"出力パス: {output_path}")
+            audio.export(output_path, **export_params)
+            self.log(f"音声を保存しました: {output_path}")
+
+            return True
+
+        except Exception as e:
+            import traceback
+            print(f"エラー: 最終音声の出力に失敗しました: {e}")
+            if self.verbose:
+                traceback.print_exc()
+            if "codec" in str(e).lower() or "encoder" in str(e).lower() or "WinError 2" in str(e) or "FileNotFoundError" in str(e):
+                print(f"\nFFmpegパスの問題の可能性があります。")
+                print(f"検出されたFFmpegパス: {shutil.which('ffmpeg') or 'なし'}")
+                print(f"AudioSegment.ffmpeg: {getattr(AudioSegment, 'ffmpeg', 'なし')}")
+                print(f"AudioSegment.converter: {getattr(AudioSegment, 'converter', 'なし')}")
+                print(f"\n解決方法:")
+                print(f"1. FFmpegをシステムのPATHに追加してください")
+                print(f"2. 代替案として --format wav を使用してWAV形式で出力")
+            return False
+
     def cleanup_temp_files(self, keep_intermediate: bool = False):
         """一時ファイルをクリーンアップ"""
         if keep_intermediate:
@@ -317,11 +448,14 @@ class AudioProcessor:
         output_file: str,
         no_noise_reduction: bool = False,
         no_silence_removal: bool = False,
+        no_compression: bool = False,
         silence_threshold: int = -40,
         min_silence_len: int = 500,
         keep_silence: int = 100,
         normalize_level: float = -20.0,
-        save_intermediate: bool = False
+        save_intermediate: bool = False,
+        output_format: str = "mp3",
+        bitrate: str = "192k"
     ) -> bool:
         """音声処理のメイン処理"""
 
@@ -341,8 +475,10 @@ class AudioProcessor:
             print(f"  時間: {input_duration:.2f} 秒 ({input_duration/60:.2f} 分)")
 
         # 処理ステップ数を計算
-        total_steps = 4  # 基本: 抽出、正規化、圧縮、出力
+        total_steps = 4  # 基本: 抽出、正規化、最終出力、クリーンアップ
         if not no_noise_reduction:
+            total_steps += 1
+        if not no_compression:
             total_steps += 1
         if not no_silence_removal:
             total_steps += 1
@@ -395,17 +531,20 @@ class AudioProcessor:
         current_file = normalized_file
 
         # 4. ダイナミックレンジ圧縮
-        current_step += 1
-        self.print_step(current_step, total_steps, "ダイナミックレンジを圧縮中...")
-        step_start = time.time()
+        if not no_compression:
+            current_step += 1
+            self.print_step(current_step, total_steps, "ダイナミックレンジを圧縮中...")
+            step_start = time.time()
 
-        compressed_file = f"{base_name}_compressed.wav" if save_intermediate else f"{base_name}_temp_compressed.wav"
-        if not self.apply_compression(current_file, compressed_file):
-            self.cleanup_temp_files(save_intermediate)
-            return False
+            compressed_file = f"{base_name}_compressed.wav" if save_intermediate else f"{base_name}_temp_compressed.wav"
+            if not self.apply_compression(current_file, compressed_file):
+                self.cleanup_temp_files(save_intermediate)
+                return False
 
-        print(f"  完了 ({time.time() - step_start:.2f}秒)")
-        current_file = compressed_file
+            print(f"  完了 ({time.time() - step_start:.2f}秒)")
+            current_file = compressed_file
+        else:
+            print(f"\n[スキップ] ダイナミックレンジ圧縮")
 
         # 5. 無音除去
         if not no_silence_removal:
@@ -413,9 +552,10 @@ class AudioProcessor:
             self.print_step(current_step, total_steps, "無音部分を除去中...")
             step_start = time.time()
 
+            silence_removed_file = f"{base_name}_silence_removed.wav" if save_intermediate else f"{base_name}_temp_silence_removed.wav"
             if not self.remove_silence(
                 current_file,
-                output_file,
+                silence_removed_file,
                 silence_threshold,
                 min_silence_len,
                 keep_silence
@@ -424,13 +564,22 @@ class AudioProcessor:
                 return False
 
             print(f"  完了 ({time.time() - step_start:.2f}秒)")
+            current_file = silence_removed_file
         else:
             print(f"\n[スキップ] 無音除去")
-            # 最終ファイルとして出力
-            audio = AudioSegment.from_file(current_file)
-            audio.export(output_file, format="wav")
 
-        # 6. クリーンアップ
+        # 6. 最終出力（フォーマット変換）
+        current_step += 1
+        self.print_step(current_step, total_steps, f"{output_format.upper()}形式で出力中...")
+        step_start = time.time()
+
+        if not self.export_final_audio(current_file, output_file, output_format, bitrate):
+            self.cleanup_temp_files(save_intermediate)
+            return False
+
+        print(f"  完了 ({time.time() - step_start:.2f}秒)")
+
+        # 7. クリーンアップ
         current_step += 1
         self.print_step(current_step, total_steps, "処理を完了しています...")
         self.cleanup_temp_files(save_intermediate)
@@ -510,6 +659,12 @@ def main():
     )
 
     parser.add_argument(
+        "--no-compression",
+        action="store_true",
+        help="ダイナミックレンジ圧縮をスキップ（処理速度が大幅に向上）"
+    )
+
+    parser.add_argument(
         "--silence-threshold",
         type=int,
         default=-40,
@@ -538,6 +693,21 @@ def main():
     )
 
     parser.add_argument(
+        "--format",
+        type=str,
+        default="mp3",
+        choices=["mp3", "aac", "wav", "ogg", "opus"],
+        help="出力オーディオフォーマット (デフォルト: mp3)"
+    )
+
+    parser.add_argument(
+        "--bitrate",
+        type=str,
+        default="192k",
+        help="音声ビットレート (例: 128k, 192k, 256k, 320k) (デフォルト: 192k)"
+    )
+
+    parser.add_argument(
         "--save-intermediate",
         action="store_true",
         help="中間ファイルを保存"
@@ -551,10 +721,24 @@ def main():
 
     args = parser.parse_args()
 
+    # FFmpegのセットアップ
+    if not setup_ffmpeg():
+        print("警告: FFmpegが見つかりませんでした。")
+        print("MP3/AAC等の圧縮フォーマットでの出力にはFFmpegが必要です。")
+        print("\nFFmpegのインストール方法:")
+        print("  Windows: https://ffmpeg.org/download.html からダウンロード")
+        print("  macOS: brew install ffmpeg")
+        print("  Linux: sudo apt install ffmpeg (Ubuntu/Debian)")
+        print("         sudo yum install ffmpeg (CentOS/RHEL)")
+        print("\nWAV形式での出力は可能ですが、--format wav を指定してください。")
+        if args.format != 'wav':
+            print(f"\nエラー: {args.format}形式での出力にはFFmpegが必要です。")
+            sys.exit(1)
+
     # 出力ファイル名を生成
     if args.output is None:
         base_name = Path(args.input).stem
-        args.output = f"{base_name}_processed.wav"
+        args.output = f"{base_name}_processed.{args.format}"
 
     # 処理を実行
     processor = AudioProcessor(verbose=args.verbose)
@@ -565,11 +749,14 @@ def main():
             output_file=args.output,
             no_noise_reduction=args.no_noise_reduction,
             no_silence_removal=args.no_silence_removal,
+            no_compression=args.no_compression,
             silence_threshold=args.silence_threshold,
             min_silence_len=args.min_silence_len,
             keep_silence=args.keep_silence,
             normalize_level=args.normalize_level,
-            save_intermediate=args.save_intermediate
+            save_intermediate=args.save_intermediate,
+            output_format=args.format,
+            bitrate=args.bitrate
         )
 
         if success:

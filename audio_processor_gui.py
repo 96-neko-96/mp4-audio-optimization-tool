@@ -121,6 +121,11 @@ def set_ffmpeg_path(custom_path: str):
         os.environ['FFMPEG_BINARY'] = custom_path
         os.environ['IMAGEIO_FFMPEG_EXE'] = custom_path
 
+        # PyDub用の設定を追加
+        AudioSegment.converter = custom_path
+        AudioSegment.ffmpeg = custom_path
+        AudioSegment.ffprobe = shutil.which('ffprobe') or custom_path.replace('ffmpeg', 'ffprobe')
+
     except Exception as e:
         result['available'] = False
         result['message'] = f"❌ FFmpegの確認に失敗しました: {e}\nパス: {custom_path}"
@@ -128,11 +133,42 @@ def set_ffmpeg_path(custom_path: str):
     return result
 
 
+def setup_ffmpeg_for_pydub():
+    """PyDub用にFFmpegを設定"""
+    # 既に設定されている場合はスキップ
+    if hasattr(AudioSegment, 'ffmpeg') and AudioSegment.ffmpeg:
+        return True
+
+    # システムのPATHからFFmpegを検索
+    ffmpeg_path = shutil.which('ffmpeg')
+
+    if ffmpeg_path and os.path.exists(ffmpeg_path):
+        AudioSegment.converter = ffmpeg_path
+        AudioSegment.ffmpeg = ffmpeg_path
+        AudioSegment.ffprobe = shutil.which('ffprobe') or ffmpeg_path.replace('ffmpeg', 'ffprobe')
+        return True
+
+    # imageio-ffmpegを試す
+    try:
+        import imageio_ffmpeg
+        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+        if os.path.exists(ffmpeg_path):
+            AudioSegment.converter = ffmpeg_path
+            AudioSegment.ffmpeg = ffmpeg_path
+            return True
+    except ImportError:
+        pass
+
+    return False
+
+
 class AudioProcessorGUI:
     """音声処理のGUIラッパークラス"""
 
     def __init__(self):
         self.temp_files = []
+        # PyDub用のFFmpeg設定を初期化
+        setup_ffmpeg_for_pydub()
 
     def log(self, message: str):
         """ログメッセージを出力"""
@@ -359,15 +395,116 @@ class AudioProcessorGUI:
         except Exception as e:
             return False, f"エラー: 無音除去に失敗しました: {e}", 0
 
+    def export_final_audio(
+        self,
+        input_path: str,
+        output_path: str,
+        output_format: str,
+        bitrate: str,
+        progress=gr.Progress()
+    ) -> tuple:
+        """最終音声を指定フォーマットで出力"""
+        try:
+            # 圧縮フォーマットの場合、FFmpegを再確認して設定
+            format_lower = output_format.lower()
+            if format_lower in ['mp3', 'aac', 'ogg', 'opus']:
+                # FFmpegパスを取得
+                ffmpeg_path = shutil.which('ffmpeg')
+                if not ffmpeg_path:
+                    # imageio-ffmpegを試す
+                    try:
+                        import imageio_ffmpeg
+                        ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+                    except ImportError:
+                        pass
+
+                if not ffmpeg_path or not os.path.exists(ffmpeg_path):
+                    error_msg = f"エラー: FFmpegが見つかりません。{format_lower.upper()}形式での出力にはFFmpegが必要です。\n\n"
+                    error_msg += "FFmpegのインストール方法:\n"
+                    error_msg += "  Windows: https://ffmpeg.org/download.html からダウンロード\n"
+                    error_msg += "  macOS: brew install ffmpeg\n"
+                    error_msg += "  Linux: sudo apt install ffmpeg\n\n"
+                    error_msg += "または、画面左側のFFmpeg設定セクションからカスタムパスを設定してください。\n"
+                    error_msg += "代替案: 出力フォーマットをWAVに変更してください。"
+                    return False, error_msg
+
+                # PyDub用にFFmpegパスを明示的に設定（export直前）
+                self.log(f"FFmpegパスを設定: {ffmpeg_path}")
+                AudioSegment.converter = ffmpeg_path
+                AudioSegment.ffmpeg = ffmpeg_path
+                AudioSegment.ffprobe = ffmpeg_path.replace('ffmpeg', 'ffprobe')
+
+                # 環境変数にも設定
+                os.environ['FFMPEG_BINARY'] = ffmpeg_path
+                os.environ['IMAGEIO_FFMPEG_EXE'] = ffmpeg_path
+
+                self.log(f"AudioSegment.converter: {AudioSegment.converter}")
+                self.log(f"AudioSegment.ffmpeg: {AudioSegment.ffmpeg}")
+
+            progress(0.95, desc=f"{output_format.upper()}形式で出力中...")
+
+            self.log(f"音声ファイルを読み込み中: {input_path}")
+            audio = AudioSegment.from_file(input_path)
+
+            self.log(f"音声を {format_lower.upper()} 形式で出力中 (ビットレート: {bitrate})...")
+
+            # フォーマット別のパラメータ設定
+            export_params = {
+                'format': format_lower,
+            }
+
+            # 圧縮フォーマットの場合はビットレートを設定
+            if format_lower in ['mp3', 'aac', 'ogg', 'opus']:
+                export_params['bitrate'] = bitrate
+
+                # MP3の場合はコーデックを指定
+                if format_lower == 'mp3':
+                    export_params['codec'] = 'libmp3lame'
+                # AACの場合
+                elif format_lower == 'aac':
+                    export_params['codec'] = 'aac'
+                # Opusの場合
+                elif format_lower == 'opus':
+                    export_params['codec'] = 'libopus'
+
+            # 音声をエクスポート
+            self.log(f"エクスポートパラメータ: {export_params}")
+            self.log(f"出力パス: {output_path}")
+            audio.export(output_path, **export_params)
+            progress(1.0, desc="出力完了")
+            self.log(f"音声を保存しました: {output_path}")
+
+            return True, f"{format_lower.upper()}形式での出力完了 (ビットレート: {bitrate})"
+
+        except Exception as e:
+            import traceback
+            error_details = traceback.format_exc()
+            self.log(f"エラー詳細: {error_details}")
+
+            error_msg = f"エラー: 最終音声の出力に失敗しました: {e}\n\n"
+            if "codec" in str(e).lower() or "encoder" in str(e).lower() or "WinError 2" in str(e) or "FileNotFoundError" in str(e):
+                error_msg += "FFmpegパスの問題の可能性があります。\n"
+                error_msg += f"検出されたFFmpegパス: {shutil.which('ffmpeg') or 'なし'}\n"
+                error_msg += f"AudioSegment.ffmpeg: {getattr(AudioSegment, 'ffmpeg', 'なし')}\n"
+                error_msg += f"AudioSegment.converter: {getattr(AudioSegment, 'converter', 'なし')}\n\n"
+                error_msg += "解決方法:\n"
+                error_msg += "1. FFmpegをシステムのPATHに追加してください\n"
+                error_msg += "2. または、画面左側のFFmpeg設定セクションからカスタムパスを設定\n"
+                error_msg += "3. 代替案として出力フォーマットをWAVに変更"
+            return False, error_msg
+
     def process_audio(
         self,
         input_file,
         enable_noise_reduction: bool,
         enable_silence_removal: bool,
+        enable_compression: bool,
         silence_threshold: int,
         min_silence_len: int,
         keep_silence: int,
         normalize_level: float,
+        output_format: str,
+        bitrate: str,
         progress=gr.Progress()
     ):
         """音声処理のメイン処理"""
@@ -434,7 +571,7 @@ class AudioProcessorGUI:
             temp_dir = tempfile.mkdtemp()
 
             # 1. 音声抽出
-            status_messages.append("\n[1/6] MP4から音声を抽出中...")
+            status_messages.append("\n[1/7] MP4から音声を抽出中...")
             temp_audio = os.path.join(temp_dir, f"{base_name}_temp_audio.wav")
             success, msg = self.extract_audio_from_video(input_path, temp_audio, progress)
             if not success:
@@ -445,7 +582,7 @@ class AudioProcessorGUI:
 
             # 2. ノイズ除去
             if enable_noise_reduction:
-                status_messages.append("\n[2/6] ノイズを除去中...")
+                status_messages.append("\n[2/7] ノイズを除去中...")
                 denoised_file = os.path.join(temp_dir, f"{base_name}_denoised.wav")
                 success, msg = self.reduce_noise(current_file, denoised_file, progress)
                 if not success:
@@ -454,10 +591,10 @@ class AudioProcessorGUI:
                 status_messages.append(f"✓ {msg}")
                 current_file = denoised_file
             else:
-                status_messages.append("\n[2/6] ノイズ除去をスキップ")
+                status_messages.append("\n[2/7] ノイズ除去をスキップ")
 
             # 3. 音量正規化
-            status_messages.append(f"\n[3/6] 音量を正規化中 (目標: {normalize_level} dBFS)...")
+            status_messages.append(f"\n[3/7] 音量を正規化中 (目標: {normalize_level} dBFS)...")
             normalized_file = os.path.join(temp_dir, f"{base_name}_normalized.wav")
             success, msg = self.normalize_audio(current_file, normalized_file, normalize_level, progress)
             if not success:
@@ -467,22 +604,25 @@ class AudioProcessorGUI:
             current_file = normalized_file
 
             # 4. ダイナミックレンジ圧縮
-            status_messages.append("\n[4/6] ダイナミックレンジを圧縮中...")
-            compressed_file = os.path.join(temp_dir, f"{base_name}_compressed.wav")
-            success, msg = self.apply_compression(current_file, compressed_file, progress)
-            if not success:
-                self.cleanup_temp_files()
-                return None, msg, None
-            status_messages.append(f"✓ {msg}")
-            current_file = compressed_file
+            if enable_compression:
+                status_messages.append("\n[4/7] ダイナミックレンジを圧縮中...")
+                compressed_file = os.path.join(temp_dir, f"{base_name}_compressed.wav")
+                success, msg = self.apply_compression(current_file, compressed_file, progress)
+                if not success:
+                    self.cleanup_temp_files()
+                    return None, msg, None
+                status_messages.append(f"✓ {msg}")
+                current_file = compressed_file
+            else:
+                status_messages.append("\n[4/7] ダイナミックレンジ圧縮をスキップ")
 
             # 5. 無音除去
-            output_file = os.path.join(temp_dir, f"{base_name}_processed.wav")
             if enable_silence_removal:
-                status_messages.append("\n[5/6] 無音部分を除去中...")
+                status_messages.append("\n[5/7] 無音部分を除去中...")
+                silence_removed_file = os.path.join(temp_dir, f"{base_name}_silence_removed.wav")
                 success, msg, removed = self.remove_silence(
                     current_file,
-                    output_file,
+                    silence_removed_file,
                     silence_threshold,
                     min_silence_len,
                     keep_silence,
@@ -492,14 +632,28 @@ class AudioProcessorGUI:
                     self.cleanup_temp_files()
                     return None, msg, None
                 status_messages.append(f"✓ {msg}")
+                current_file = silence_removed_file
             else:
-                status_messages.append("\n[5/6] 無音除去をスキップ")
-                audio = AudioSegment.from_file(current_file)
-                audio.export(output_file, format="wav")
+                status_messages.append("\n[5/7] 無音除去をスキップ")
 
-            # 6. 完了
+            # 6. 最終出力（フォーマット変換）
+            status_messages.append(f"\n[6/7] {output_format.upper()}形式で出力中...")
+            output_file = os.path.join(temp_dir, f"{base_name}_processed.{output_format}")
+            success, msg = self.export_final_audio(
+                current_file,
+                output_file,
+                output_format,
+                bitrate,
+                progress
+            )
+            if not success:
+                self.cleanup_temp_files()
+                return None, msg, None
+            status_messages.append(f"✓ {msg}")
+
+            # 7. 完了
             progress(1.0, desc="処理完了！")
-            status_messages.append("\n[6/6] 処理完了")
+            status_messages.append("\n[7/7] 処理完了")
 
             # 出力ファイル情報
             output_size = os.path.getsize(output_file) / (1024 * 1024)
@@ -578,6 +732,7 @@ def create_gui():
             3. **音量正規化** - 音量レベルを最適化
             4. **ダイナミックレンジ圧縮** - 聞き取りやすく調整
             5. **無音除去** - 長い沈黙を削除（オプション）
+            6. **フォーマット変換** - MP3などの圧縮形式で出力（ファイルサイズ削減）
             """
         )
 
@@ -598,6 +753,12 @@ def create_gui():
                         info="背景ノイズを除去します（処理時間が増加します）"
                     )
 
+                    enable_compression = gr.Checkbox(
+                        label="ダイナミックレンジ圧縮を有効化",
+                        value=False,
+                        info="音量差を圧縮します（⚠️処理が非常に遅くなります）"
+                    )
+
                     enable_silence_removal = gr.Checkbox(
                         label="無音除去を有効化",
                         value=True,
@@ -611,6 +772,21 @@ def create_gui():
                         step=1,
                         label="正規化レベル (dBFS)",
                         info="音量の目標レベル（推奨: -20）"
+                    )
+
+                with gr.Accordion("出力設定", open=True):
+                    output_format = gr.Dropdown(
+                        choices=["mp3", "aac", "wav", "ogg", "opus"],
+                        value="mp3",
+                        label="出力フォーマット",
+                        info="MP3推奨（品質と互換性のバランス）"
+                    )
+
+                    bitrate = gr.Dropdown(
+                        choices=["128k", "192k", "256k", "320k"],
+                        value="192k",
+                        label="ビットレート",
+                        info="192kは高品質で適度なファイルサイズ（WAVには適用されません）"
                     )
 
                 with gr.Accordion("無音除去の詳細設定", open=False):
@@ -692,40 +868,40 @@ def create_gui():
 
         # プリセット設定の関数
         def apply_standard_preset():
-            return True, True, -40, 500, 100, -20.0
+            return True, True, False, -40, 500, 100, -20.0
 
         def apply_quality_preset():
-            return True, True, -35, 400, 150, -18.0
+            return True, True, False, -35, 400, 150, -18.0
 
         def apply_fast_preset():
-            return False, True, -40, 500, 100, -20.0
+            return False, True, False, -40, 500, 100, -20.0
 
         def apply_aggressive_preset():
-            return True, True, -45, 1000, 50, -20.0
+            return True, True, False, -45, 1000, 50, -20.0
 
         # プリセットボタンのイベント
         preset_standard.click(
             fn=apply_standard_preset,
-            outputs=[enable_noise_reduction, enable_silence_removal, silence_threshold,
-                    min_silence_len, keep_silence, normalize_level]
+            outputs=[enable_noise_reduction, enable_silence_removal, enable_compression,
+                    silence_threshold, min_silence_len, keep_silence, normalize_level]
         )
 
         preset_quality.click(
             fn=apply_quality_preset,
-            outputs=[enable_noise_reduction, enable_silence_removal, silence_threshold,
-                    min_silence_len, keep_silence, normalize_level]
+            outputs=[enable_noise_reduction, enable_silence_removal, enable_compression,
+                    silence_threshold, min_silence_len, keep_silence, normalize_level]
         )
 
         preset_fast.click(
             fn=apply_fast_preset,
-            outputs=[enable_noise_reduction, enable_silence_removal, silence_threshold,
-                    min_silence_len, keep_silence, normalize_level]
+            outputs=[enable_noise_reduction, enable_silence_removal, enable_compression,
+                    silence_threshold, min_silence_len, keep_silence, normalize_level]
         )
 
         preset_aggressive.click(
             fn=apply_aggressive_preset,
-            outputs=[enable_noise_reduction, enable_silence_removal, silence_threshold,
-                    min_silence_len, keep_silence, normalize_level]
+            outputs=[enable_noise_reduction, enable_silence_removal, enable_compression,
+                    silence_threshold, min_silence_len, keep_silence, normalize_level]
         )
 
         # FFmpeg確認ボタンのイベント
@@ -763,10 +939,13 @@ def create_gui():
                 input_file,
                 enable_noise_reduction,
                 enable_silence_removal,
+                enable_compression,
                 silence_threshold,
                 min_silence_len,
                 keep_silence,
-                normalize_level
+                normalize_level,
+                output_format,
+                bitrate
             ],
             outputs=[audio_output, status_output, download_output]
         )
@@ -778,6 +957,8 @@ def create_gui():
             - **ノイズ除去**: 効果的ですが処理時間が長くなります
             - **無音閾値**: 値を小さくすると(-45など)より多くの無音を削除
             - **正規化レベル**: -20 dBFSが文字起こしサービスに最適
+            - **出力フォーマット**: MP3は互換性が高く、192kビットレートで高品質
+            - **ファイルサイズ削減**: MP3/AAC形式を使用すると元のMP4より小さくなります
             - **処理時間**: ファイルサイズと有効な処理により変動します
 
             ### ⚠️ 注意事項
